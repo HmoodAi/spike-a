@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Spike A">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icon.svg">
+<title>Spike A</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #111; color: #eee; padding-bottom: 96px; }
+  header { padding: 12px 16px; border-bottom: 1px solid #333; font-size: 13px; line-height: 1.6; }
+  header b { color: #fff; }
+  .ok { color: #6fd38a; } .bad { color: #f07070; } .na { color: #aaa; }
+  main { padding: 16px; }
+  .card { background: #1c1c1c; border: 1px solid #333; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; } h2 { font-size: 14px; margin: 0 0 12px; color: #aaa; font-weight: 400; }
+  .steppers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
+  .stp { background: #262626; border-radius: 10px; padding: 8px; text-align: center; }
+  .stp .lbl { font-size: 12px; color: #aaa; } .stp .val { font-size: 28px; font-weight: 600; margin: 4px 0; }
+  .stp .btns { display: flex; gap: 6px; justify-content: center; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 12px 14px; background: #333; color: #fff; }
+  button.big { width: 100%; padding: 18px; font-size: 18px; background: #2f6fed; }
+  button.sm { padding: 8px 14px; font-size: 18px; min-width: 44px; }
+  button.ghost { background: transparent; border: 1px solid #444; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .muted { color: #aaa; font-size: 13px; }
+  #timer { position: fixed; left: 0; right: 0; bottom: 0; background: #1c1c1c; border-top: 1px solid #333; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); display: none; align-items: center; gap: 12px; }
+  #timer .t { font-size: 32px; font-weight: 600; flex: 1; font-variant-numeric: tabular-nums; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; background: #0d0d0d; padding: 8px; border-radius: 8px; max-height: 220px; overflow: auto; }
+  ul { padding-left: 18px; margin: 8px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+<header id="status">loading…</header>
+
+<main>
+  <div class="card" id="setCard">
+    <h1 id="exName">—</h1>
+    <h2 id="exMeta">—</h2>
+    <div class="steppers">
+      <div class="stp"><div class="lbl">kg</div><div class="val" id="w">0</div><div class="btns"><button class="sm" data-k="w" data-d="-1">−</button><button class="sm" data-k="w" data-d="1">+</button></div></div>
+      <div class="stp"><div class="lbl">reps</div><div class="val" id="r">0</div><div class="btns"><button class="sm" data-k="r" data-d="-1">−</button><button class="sm" data-k="r" data-d="1">+</button></div></div>
+      <div class="stp"><div class="lbl">RIR</div><div class="val" id="i">2</div><div class="btns"><button class="sm" data-k="i" data-d="-1">−</button><button class="sm" data-k="i" data-d="1">+</button></div></div>
+    </div>
+    <button class="big" id="complete">Complete set</button>
+    <p class="muted" id="lastSets"></p>
+  </div>
+
+  <div class="card">
+    <h1>Timer drift test</h1>
+    <p class="muted">Runs 10 minutes. Lock the phone halfway through, then unlock. Wall-clock drift must stay under 2 s. Tick drift is expected to be large; that proves the timestamp approach.</p>
+    <div class="row"><button id="driftStart">Start 10-min test</button><span class="muted" id="driftOut"></span></div>
+  </div>
+
+  <div class="card">
+    <h1>Report</h1>
+    <div class="row">
+      <button id="copy">Copy report</button>
+      <button class="ghost" id="reset">Reset all data</button>
+    </div>
+    <pre id="report">—</pre>
+  </div>
+</main>
+
+<div id="timer">
+  <div class="t" id="tRemain">0:00</div>
+  <button id="tPlus">+15s</button>
+  <button class="ghost" id="tSkip">Skip</button>
+</div>
+
+<script>
+const VERSION = 'spike-a-0.1.0';
+const PROGRAM = [
+  { id: 'goblet_squat', name: 'Goblet Squat', sets: 3, rep_min: 8, rep_max: 10, rir_min: 1, rir_max: 2, start: 20, inc: 2, rest: 90 },
+  { id: 'chest_supported_row', name: 'Chest-Supported Row', sets: 3, rep_min: 8, rep_max: 12, rir_min: 1, rir_max: 2, start: 16, inc: 2, rest: 90 },
+];
+
+// ---------- IndexedDB (no library) ----------
+let db;
+function openDB() {
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open('spike_a', 1);
+    rq.onupgradeneeded = () => {
+      const d = rq.result;
+      d.createObjectStore('sets', { keyPath: 'id' });
+      d.createObjectStore('pending_ops', { keyPath: 'id' });
+      d.createObjectStore('boots', { keyPath: 'id' });
+      d.createObjectStore('kv', { keyPath: 'key' });
+    };
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+function tx(stores, mode, fn) {
+  return new Promise((res, rej) => {
+    const t = db.transaction(stores, mode);
+    const out = fn(t);
+    t.oncomplete = () => res(out);
+    t.onerror = () => rej(t.error);
+    t.onabort = () => rej(t.error);
+  });
+}
+function getAll(store) {
+  return new Promise((res, rej) => { const rq = db.transaction(store).objectStore(store).getAll(); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
+}
+function kvGet(key) {
+  return new Promise((res) => { const rq = db.transaction('kv').objectStore('kv').get(key); rq.onsuccess = () => res(rq.result ? rq.result.value : null); rq.onerror = () => res(null); });
+}
+function kvSet(key, value) { return tx(['kv'], 'readwrite', t => t.objectStore('kv').put({ key, value })); }
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+
+// ---------- Platform probes ----------
+const probes = { version: VERSION, display_mode: 'browser', persist: 'unsupported', wake_lock: 'unsupported', quota: null };
+function probeDisplay() {
+  const standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+  probes.display_mode = standalone ? 'standalone' : 'browser';
+}
+async function probeStorage() {
+  if (!navigator.storage) return;
+  try { if (navigator.storage.persist) probes.persist = String(await navigator.storage.persist()); } catch (e) { probes.persist = 'error:' + e.name; }
+  try { if (navigator.storage.estimate) { const e = await navigator.storage.estimate(); probes.quota = { usage: e.usage, quota: e.quota }; } } catch (e) {}
+}
+let wakeLock = null;
+async function requestWakeLock(reason) {
+  if (!('wakeLock' in navigator)) { probes.wake_lock = 'unsupported'; render(); return; }
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    probes.wake_lock = 'granted';
+    wakeLock.addEventListener('release', () => { probes.wake_lock = 'released'; render(); });
+    log('wakelock granted (' + reason + ')');
+  } catch (e) { probes.wake_lock = 'denied:' + e.name; log('wakelock denied (' + reason + '): ' + e.name); }
+  render();
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { requestWakeLock('visibilitychange'); tickTimer(); }
+});
+
+// ---------- State ----------
+let pos = { ex: 0, set: 1 };
+let cur = { w: 0, r: 0, i: 2 };
+const logs = [];
+function log(m) { logs.push(new Date().toISOString().slice(11, 19) + ' ' + m); if (logs.length > 50) logs.shift(); }
+
+async function loadPos() {
+  const p = await kvGet('pos'); if (p) pos = p;
+  const ex = PROGRAM[pos.ex];
+  cur = { w: ex.start, r: ex.rep_min, i: ex.rir_max };
+  const last = (await getAll('sets')).filter(s => s.exercise_id === ex.id).sort((a, b) => b.completed_at.localeCompare(a.completed_at))[0];
+  if (last) cur = { w: last.weight_kg, r: last.reps, i: last.rir };
+}
+
+async function completeSet() {
+  const ex = PROGRAM[pos.ex];
+  const row = { id: uuid(), exercise_id: ex.id, set_index: pos.set, weight_kg: cur.w, reps: cur.r, rir: cur.i, completed_at: new Date().toISOString() };
+  const op = { id: uuid(), kind: 'upsert_set', payload: row, created_at: row.completed_at, status: 'pending' };
+  // local-first: set + pending op in ONE transaction
+  await tx(['sets', 'pending_ops'], 'readwrite', t => { t.objectStore('sets').put(row); t.objectStore('pending_ops').put(op); });
+  log('set saved ' + ex.id + ' #' + pos.set);
+  if (pos.set < ex.sets) pos.set++; else { pos.ex = (pos.ex + 1) % PROGRAM.length; pos.set = 1; }
+  await kvSet('pos', pos);
+  await startRest(ex.rest);
+  await loadPos();
+  requestWakeLock('user gesture');
+  render();
+}
+
+// ---------- Rest timer from timestamp ----------
+let timerInt = null;
+async function startRest(sec) {
+  const ends = Date.now() + sec * 1000;
+  localStorage.setItem('rest_ends_at', String(ends));
+  await kvSet('rest_ends_at', ends);
+  tickTimer();
+}
+function tickTimer() {
+  const ends = Number(localStorage.getItem('rest_ends_at') || 0);
+  const el = document.getElementById('timer');
+  if (!ends) { el.style.display = 'none'; return; }
+  const remain = Math.max(0, Math.round((ends - Date.now()) / 1000));
+  el.style.display = 'flex';
+  document.getElementById('tRemain').textContent = Math.floor(remain / 60) + ':' + String(remain % 60).padStart(2, '0');
+  if (remain <= 0) { localStorage.removeItem('rest_ends_at'); el.style.display = 'none'; if (navigator.vibrate) navigator.vibrate(200); }
+}
+setInterval(tickTimer, 500);
+document.getElementById('tPlus').onclick = () => { const e = Number(localStorage.getItem('rest_ends_at') || Date.now()); localStorage.setItem('rest_ends_at', String(e + 15000)); tickTimer(); };
+document.getElementById('tSkip').onclick = () => { localStorage.removeItem('rest_ends_at'); tickTimer(); };
+
+// ---------- Drift test ----------
+document.getElementById('driftStart').onclick = async () => {
+  const start = Date.now(); let ticks = 0;
+  await kvSet('drift_running', { start });
+  const out = document.getElementById('driftOut');
+  const h = setInterval(async () => {
+    ticks++;
+    const wall = (Date.now() - start) / 1000;
+    out.textContent = 'wall ' + wall.toFixed(0) + 's · ticks ' + ticks + ' · tick drift ' + (wall - ticks).toFixed(1) + 's';
+    if (wall >= 600) {
+      clearInterval(h);
+      const r = { finished_at: new Date().toISOString(), wall_s: Number(wall.toFixed(1)), ticks, tick_drift_s: Number((wall - ticks).toFixed(1)), wall_drift_s: Number((wall - 600).toFixed(2)) };
+      await kvSet('drift_result', r); await kvSet('drift_running', null);
+      out.textContent = 'done: ' + JSON.stringify(r); render();
+    }
+  }, 1000);
+};
+
+// ---------- Boot log + report ----------
+async function recordBoot() {
+  const sets = await getAll('sets'); const ops = await getAll('pending_ops');
+  const boot = { id: uuid(), at: new Date().toISOString(), ...probes, sets_count: sets.length, pending_count: ops.length, ua: navigator.userAgent };
+  await tx(['boots'], 'readwrite', t => t.objectStore('boots').put(boot));
+  return boot;
+}
+async function buildReport() {
+  const sets = await getAll('sets'); const ops = await getAll('pending_ops'); const boots = await getAll('boots');
+  return {
+    version: VERSION, now: new Date().toISOString(), probes,
+    sets_count: sets.length, pending_count: ops.length,
+    last_sets: sets.sort((a, b) => b.completed_at.localeCompare(a.completed_at)).slice(0, 5),
+    boots: boots.sort((a, b) => a.at.localeCompare(b.at)).slice(-12),
+    drift_result: await kvGet('drift_result'), log: logs,
+  };
+}
+document.getElementById('copy').onclick = async () => {
+  const txt = JSON.stringify(await buildReport(), null, 1);
+  document.getElementById('report').textContent = txt;
+  try { await navigator.clipboard.writeText(txt); log('report copied'); } catch (e) { log('clipboard failed: select the text manually'); }
+  render();
+};
+document.getElementById('reset').onclick = async () => {
+  if (!confirm('Delete all spike data?')) return;
+  await tx(['sets', 'pending_ops', 'boots', 'kv'], 'readwrite', t => ['sets', 'pending_ops', 'boots', 'kv'].forEach(s => t.objectStore(s).clear()));
+  localStorage.clear(); location.reload();
+};
+
+// ---------- UI ----------
+document.querySelectorAll('button.sm').forEach(b => b.onclick = () => {
+  const k = b.dataset.k, d = Number(b.dataset.d), ex = PROGRAM[pos.ex];
+  if (k === 'w') cur.w = Math.max(0, +(cur.w + d * ex.inc).toFixed(1));
+  if (k === 'r') cur.r = Math.max(0, cur.r + d);
+  if (k === 'i') cur.i = Math.min(4, Math.max(0, cur.i + d));
+  render();
+});
+document.getElementById('complete').onclick = completeSet;
+
+async function render() {
+  const ex = PROGRAM[pos.ex];
+  document.getElementById('exName').textContent = ex.name + ' — set ' + pos.set + '/' + ex.sets;
+  document.getElementById('exMeta').textContent = ex.rep_min + '–' + ex.rep_max + ' reps @ RIR ' + ex.rir_min + '–' + ex.rir_max + ' · rest ' + ex.rest + 's';
+  document.getElementById('w').textContent = cur.w; document.getElementById('r').textContent = cur.r; document.getElementById('i').textContent = cur.i;
+  const sets = db ? await getAll('sets') : []; const ops = db ? await getAll('pending_ops') : [];
+  document.getElementById('lastSets').textContent = sets.length + ' sets stored · ' + ops.length + ' pending ops';
+  const cls = v => (v === 'standalone' || v === 'true' || v === 'granted') ? 'ok' : (v === 'unsupported' ? 'na' : 'bad');
+  const q = probes.quota ? ' · storage ' + (probes.quota.usage / 1024).toFixed(0) + ' KB / ' + (probes.quota.quota / 1048576).toFixed(0) + ' MB' : '';
+  document.getElementById('status').innerHTML =
+    '<b>Spike A</b> ' + VERSION + '<br>' +
+    'display: <b class="' + cls(probes.display_mode) + '">' + probes.display_mode + '</b> · ' +
+    'persist(): <b class="' + cls(probes.persist) + '">' + probes.persist + '</b> · ' +
+    'wake lock: <b class="' + cls(probes.wake_lock) + '">' + probes.wake_lock + '</b>' + q;
+}
+
+(async () => {
+  db = await openDB();
+  probeDisplay(); await probeStorage();
+  await loadPos();
+  await recordBoot();
+  tickTimer();
+  render();
+  requestWakeLock('load');
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').then(() => log('sw registered')).catch(e => log('sw failed: ' + e.message));
+})();
+</script>
+</body>
+</html>
