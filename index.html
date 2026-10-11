@@ -54,8 +54,14 @@
   </div>
 
   <div class="card">
-    <h1>Timer drift test</h1>
-    <p class="muted">Runs 10 minutes. Lock the phone halfway through, then unlock. Wall-clock drift must stay under 2 s. Tick drift is expected to be large; that proves the timestamp approach.</p>
+    <h1>Wake lock</h1>
+    <p class="muted">iOS may only grant the wake lock from a user tap. Turn Low Power Mode off first. Tap, then watch the status line.</p>
+    <div class="row"><button id="wlBtn">Request wake lock</button><span class="muted" id="wlOut"></span></div>
+  </div>
+
+  <div class="card">
+    <h1>Timer suspension test</h1>
+    <p class="muted">Runs 10 minutes of wall clock. Lock the phone halfway, unlock after it ends. Elapsed time comes from Date.now(); the tick counter shows how long JS timers were suspended, which is why the rest timer never counts ticks.</p>
     <div class="row"><button id="driftStart">Start 10-min test</button><span class="muted" id="driftOut"></span></div>
   </div>
 
@@ -76,7 +82,7 @@
 </div>
 
 <script>
-const VERSION = 'spike-a-0.1.0';
+const VERSION = 'spike-a-0.1.1';
 const PROGRAM = [
   { id: 'goblet_squat', name: 'Goblet Squat', sets: 3, rep_min: 8, rep_max: 10, rir_min: 1, rir_max: 2, start: 20, inc: 2, rest: 90 },
   { id: 'chest_supported_row', name: 'Chest-Supported Row', sets: 3, rep_min: 8, rep_max: 12, rir_min: 1, rir_max: 2, start: 16, inc: 2, rest: 90 },
@@ -145,8 +151,11 @@ document.addEventListener('visibilitychange', () => {
 // ---------- State ----------
 let pos = { ex: 0, set: 1 };
 let cur = { w: 0, r: 0, i: 2 };
-const logs = [];
-function log(m) { logs.push(new Date().toISOString().slice(11, 19) + ' ' + m); if (logs.length > 50) logs.shift(); }
+let logs = [];
+function log(m) {
+  logs.push(new Date().toISOString().slice(11, 19) + ' ' + m); if (logs.length > 100) logs.shift();
+  if (db) kvSet('log', logs).catch(() => {});
+}
 
 async function loadPos() {
   const p = await kvGet('pos'); if (p) pos = p;
@@ -203,7 +212,7 @@ document.getElementById('driftStart').onclick = async () => {
     out.textContent = 'wall ' + wall.toFixed(0) + 's · ticks ' + ticks + ' · tick drift ' + (wall - ticks).toFixed(1) + 's';
     if (wall >= 600) {
       clearInterval(h);
-      const r = { finished_at: new Date().toISOString(), wall_s: Number(wall.toFixed(1)), ticks, tick_drift_s: Number((wall - ticks).toFixed(1)), wall_drift_s: Number((wall - 600).toFixed(2)) };
+      const r = { finished_at: new Date().toISOString(), wall_elapsed_s: Number(wall.toFixed(1)), ticks, timers_suspended_s: Number((wall - ticks).toFixed(1)), detection_latency_s: Number((wall - 600).toFixed(2)) };
       await kvSet('drift_result', r); await kvSet('drift_running', null);
       out.textContent = 'done: ' + JSON.stringify(r); render();
     }
@@ -248,6 +257,10 @@ document.querySelectorAll('button.sm').forEach(b => b.onclick = () => {
   render();
 });
 document.getElementById('complete').onclick = completeSet;
+document.getElementById('wlBtn').onclick = async () => {
+  await requestWakeLock('button tap');
+  document.getElementById('wlOut').textContent = probes.wake_lock + ' at ' + new Date().toISOString().slice(11, 19);
+};
 
 async function render() {
   const ex = PROGRAM[pos.ex];
@@ -268,11 +281,13 @@ async function render() {
 (async () => {
   db = await openDB();
   probeDisplay(); await probeStorage();
+  logs = (await kvGet('log')) || [];
+  log('boot ' + VERSION);
   await loadPos();
-  await recordBoot();
   tickTimer();
   render();
-  requestWakeLock('load');
+  await requestWakeLock('load');
+  await recordBoot();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').then(() => log('sw registered')).catch(e => log('sw failed: ' + e.message));
 })();
 </script>

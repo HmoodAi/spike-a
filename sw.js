@@ -1,4 +1,4 @@
-const CACHE = 'spike-a-0.1.0';
+const CACHE = 'spike-a-0.1.1';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon.svg'];
 
 self.addEventListener('install', (e) => {
