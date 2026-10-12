@@ -51,6 +51,7 @@
     </div>
     <button class="big" id="complete">Complete set</button>
     <p class="muted" id="lastSets"></p>
+    <p class="muted" id="resumeOut">Lock the phone during a rest, then unlock: the check appears here.</p>
   </div>
 
   <div class="card">
@@ -82,7 +83,7 @@
 </div>
 
 <script>
-const VERSION = 'spike-a-0.1.1';
+const VERSION = 'spike-a-0.1.2';
 const PROGRAM = [
   { id: 'goblet_squat', name: 'Goblet Squat', sets: 3, rep_min: 8, rep_max: 10, rir_min: 1, rir_max: 2, start: 20, inc: 2, rest: 90 },
   { id: 'chest_supported_row', name: 'Chest-Supported Row', sets: 3, rep_min: 8, rep_max: 12, rir_min: 1, rir_max: 2, start: 16, inc: 2, rest: 90 },
@@ -144,8 +145,22 @@ async function requestWakeLock(reason) {
   } catch (e) { probes.wake_lock = 'denied:' + e.name; log('wakelock denied (' + reason + '): ' + e.name); }
   render();
 }
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { requestWakeLock('visibilitychange'); tickTimer(); }
+let hiddenAt = null, hiddenRemain = null, lastShownRemain = null;
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); hiddenRemain = lastShownRemain; return; }
+  const now = Date.now();
+  const ends = Number(localStorage.getItem('rest_ends_at') || 0);
+  if (hiddenAt && hiddenRemain != null && ends) {
+    const hiddenFor = (now - hiddenAt) / 1000;
+    const after = Math.max(0, Math.ceil((ends - now) / 1000));
+    const expected = Math.max(0, hiddenRemain - hiddenFor);
+    const check = { at: new Date(now).toISOString(), shown_before_s: hiddenRemain, hidden_for_s: +hiddenFor.toFixed(1), expected_after_s: +expected.toFixed(1), shown_after_s: after, error_s: +(after - expected).toFixed(1) };
+    const arr = (await kvGet('resume_checks')) || []; arr.push(check); if (arr.length > 20) arr.shift(); await kvSet('resume_checks', arr);
+    log('resume: before ' + hiddenRemain + 's, hidden ' + hiddenFor.toFixed(1) + 's, after ' + after + 's, expected ' + expected.toFixed(1) + 's');
+    document.getElementById('resumeOut').textContent = 'Last lock/unlock: before ' + hiddenRemain + 's → hidden ' + hiddenFor.toFixed(1) + 's → after ' + after + 's (expected ' + expected.toFixed(1) + 's, error ' + check.error_s + 's)';
+  }
+  hiddenAt = null; hiddenRemain = null;
+  requestWakeLock('visibilitychange'); tickTimer();
 });
 
 // ---------- State ----------
@@ -192,12 +207,13 @@ function tickTimer() {
   const ends = Number(localStorage.getItem('rest_ends_at') || 0);
   const el = document.getElementById('timer');
   if (!ends) { el.style.display = 'none'; return; }
-  const remain = Math.max(0, Math.round((ends - Date.now()) / 1000));
+  const remain = Math.max(0, Math.ceil((ends - Date.now()) / 1000));
+  lastShownRemain = remain;
   el.style.display = 'flex';
   document.getElementById('tRemain').textContent = Math.floor(remain / 60) + ':' + String(remain % 60).padStart(2, '0');
   if (remain <= 0) { localStorage.removeItem('rest_ends_at'); el.style.display = 'none'; if (navigator.vibrate) navigator.vibrate(200); }
 }
-setInterval(tickTimer, 500);
+setInterval(tickTimer, 200);
 document.getElementById('tPlus').onclick = () => { const e = Number(localStorage.getItem('rest_ends_at') || Date.now()); localStorage.setItem('rest_ends_at', String(e + 15000)); tickTimer(); };
 document.getElementById('tSkip').onclick = () => { localStorage.removeItem('rest_ends_at'); tickTimer(); };
 
@@ -233,7 +249,7 @@ async function buildReport() {
     sets_count: sets.length, pending_count: ops.length,
     last_sets: sets.sort((a, b) => b.completed_at.localeCompare(a.completed_at)).slice(0, 5),
     boots: boots.sort((a, b) => a.at.localeCompare(b.at)).slice(-12),
-    drift_result: await kvGet('drift_result'), log: logs,
+    drift_result: await kvGet('drift_result'), resume_checks: await kvGet('resume_checks'), log: logs,
   };
 }
 document.getElementById('copy').onclick = async () => {
@@ -259,7 +275,7 @@ document.querySelectorAll('button.sm').forEach(b => b.onclick = () => {
 document.getElementById('complete').onclick = completeSet;
 document.getElementById('wlBtn').onclick = async () => {
   await requestWakeLock('button tap');
-  document.getElementById('wlOut').textContent = probes.wake_lock + ' at ' + new Date().toISOString().slice(11, 19);
+  document.getElementById('wlOut').textContent = probes.wake_lock + ' at ' + new Date().toLocaleTimeString();
 };
 
 async function render() {
